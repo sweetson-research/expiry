@@ -14,15 +14,14 @@ supabase = create_client(
     os.getenv("SUPABASE_KEY")
 )
 
-# ---------------- NAVIGATION ---------------- #
-st.sidebar.title("📦 Menu")
-page = st.sidebar.radio("Go to", ["Data Entry", "Shelf Life Report"])
+# ---------------- SAFE SESSION (FIXED) ---------------- #
+if "items" not in st.session_state:
+    st.session_state["items"] = []
 
-# ---------------- SESSION ---------------- #
-if "items" not in st.session_state or not isinstance(st.session_state.items, list):
-    st.session_state.items = []
+if not isinstance(st.session_state.get("items"), list):
+    st.session_state["items"] = []
 
-# ---------------- COMMON FUNCTIONS ---------------- #
+# ---------------- FUNCTIONS ---------------- #
 def calculate_shelf_life(mfg, exp, arrival_port):
     total_days = (exp - mfg).days
     remaining_days = (exp - arrival_port).days
@@ -36,8 +35,12 @@ def get_status(percent, tolerance):
         return "Near Expiry"
     return "OK"
 
+# ---------------- NAV ---------------- #
+st.sidebar.title("📦 Menu")
+page = st.sidebar.radio("Select", ["Data Entry", "Report"])
+
 # =====================================================
-# 📥 DATA ENTRY PAGE
+# 📥 DATA ENTRY
 # =====================================================
 if page == "Data Entry":
 
@@ -96,12 +99,14 @@ if page == "Data Entry":
         if not barcode:
             st.error("Barcode required")
         elif exp <= mfg:
-            st.error("Expiry must be after MFG")
+            st.error("Expiry must be after manufacturing date")
+        elif arrival_port < mfg:
+            st.error("Arrival cannot be before manufacturing")
         else:
             total, remaining, percent = calculate_shelf_life(mfg, exp, arrival_port)
             status = get_status(percent, tolerance)
 
-            st.session_state.items.append({
+            st.session_state["items"].append({
                 "barcode": barcode,
                 "description": description,
                 "ordered_qty": int(ordered_qty),
@@ -119,7 +124,13 @@ if page == "Data Entry":
     # -------- DISPLAY -------- #
     st.subheader("Items Added")
 
-    valid_items = [i for i in st.session_state.items if isinstance(i, dict)]
+    items = st.session_state.get("items", [])
+
+    if not isinstance(items, list):
+        items = []
+        st.session_state["items"] = []
+
+    valid_items = [i for i in items if isinstance(i, dict)]
 
     if valid_items:
         st.dataframe(pd.DataFrame(valid_items), use_container_width=True)
@@ -131,33 +142,37 @@ if page == "Data Entry":
         if not invoice:
             st.error("Invoice required")
         elif not valid_items:
-            st.error("Add items")
+            st.error("Add at least one item")
         else:
-            res = supabase.table("shipments").insert({
-                "invoice_number": invoice,
-                "bill_entry_number": bill_entry_number,
-                "arrival_port_date": str(arrival_port),
-                "arrival_warehouse_date": str(arrival_wh),
-                "bill_entry_date": str(bill_entry_date),
-                "shelf_life_tolerance": int(tolerance),
-                "total_lines": int(total_lines),
-                "received_lines": int(received_lines)
-            }).execute()
+            try:
+                res = supabase.table("shipments").insert({
+                    "invoice_number": invoice,
+                    "bill_entry_number": bill_entry_number,
+                    "arrival_port_date": str(arrival_port),
+                    "arrival_warehouse_date": str(arrival_wh),
+                    "bill_entry_date": str(bill_entry_date),
+                    "shelf_life_tolerance": int(tolerance),
+                    "total_lines": int(total_lines),
+                    "received_lines": int(received_lines)
+                }).execute()
 
-            shipment_id = res.data[0]["id"]
+                shipment_id = res.data[0]["id"]
 
-            for i in valid_items:
-                i["shipment_id"] = shipment_id
+                for i in valid_items:
+                    i["shipment_id"] = shipment_id
 
-            supabase.table("shipment_items").insert(valid_items).execute()
+                supabase.table("shipment_items").insert(valid_items).execute()
 
-            st.success("✅ Saved")
-            st.session_state.items = []
+                st.success("✅ Shipment saved")
+                st.session_state["items"] = []
+
+            except Exception as e:
+                st.error(f"Error: {e}")
 
 # =====================================================
-# 📊 REPORT PAGE
+# 📊 REPORT
 # =====================================================
-elif page == "Shelf Life Report":
+elif page == "Report":
 
     st.title("📊 Shelf Life Report")
 
@@ -212,7 +227,6 @@ elif page == "Shelf Life Report":
 
             df = pd.DataFrame(rows)
 
-            # KPIs
             st.subheader("Summary")
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Total", len(df))
