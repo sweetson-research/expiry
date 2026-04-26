@@ -1,4 +1,3 @@
-
 import streamlit as st
 from datetime import date
 import os
@@ -17,21 +16,19 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ---------------- SAFE SESSION INIT ---------------- #
+# ---------------- SAFE SESSION ---------------- #
 if "items" not in st.session_state or not isinstance(st.session_state.items, list):
     st.session_state.items = []
 
 # ---------------- HELPERS ---------------- #
-def calculate_shelf_life(mfg, exp):
+def calculate_shelf_life(mfg, exp, arrival_port):
     total_days = (exp - mfg).days
-    remaining_days = (exp - date.today()).days
-    return total_days, remaining_days
+    remaining_days = (exp - arrival_port).days
+    percent = (remaining_days / total_days) * 100 if total_days > 0 else 0
+    return total_days, remaining_days, percent
 
-def get_status(remaining, total, tolerance):
-    if total <= 0:
-        return "Invalid"
-    percent = (remaining / total) * 100
-    if remaining <= 0:
+def get_status(percent, tolerance):
+    if percent <= 0:
         return "Expired"
     elif percent < tolerance:
         return "Near Expiry"
@@ -56,18 +53,10 @@ with col2:
 col3, col4 = st.columns(2)
 
 with col3:
-    total_lines = st.number_input(
-        "Number of Item Lines in Invoice",
-        min_value=1,
-        step=1
-    )
+    total_lines = st.number_input("Number of Item Lines in Invoice", min_value=1)
 
 with col4:
-    received_lines = st.number_input(
-        "Actual Number of Lines Received",
-        min_value=0,
-        step=1
-    )
+    received_lines = st.number_input("Actual Number of Lines Received", min_value=0)
 
 col5, col6, col7 = st.columns(3)
 
@@ -84,8 +73,7 @@ tolerance = st.number_input(
     "Shelf Life Tolerance (%)",
     min_value=0,
     max_value=100,
-    value=60,
-    step=1
+    value=60
 )
 
 st.divider()
@@ -118,9 +106,11 @@ if st.button("➕ Add Item"):
         st.error("Barcode required")
     elif exp <= mfg:
         st.error("Expiry must be after manufacturing date")
+    elif arrival_port < mfg:
+        st.error("Arrival date cannot be before manufacturing date")
     else:
-        total, remaining = calculate_shelf_life(mfg, exp)
-        status = get_status(remaining, total, tolerance)
+        total, remaining, percent = calculate_shelf_life(mfg, exp, arrival_port)
+        status = get_status(percent, tolerance)
 
         st.session_state.items.append({
             "barcode": barcode,
@@ -131,6 +121,7 @@ if st.button("➕ Add Item"):
             "exp_date": str(exp),
             "total_days": total,
             "remaining_days": remaining,
+            "shelf_life_percent": round(percent, 2),
             "status": status
         })
 
@@ -141,7 +132,6 @@ st.subheader("Items Added")
 
 items = st.session_state.get("items", [])
 
-# Safety check (prevents your crash)
 if not isinstance(items, list):
     st.session_state.items = []
     items = []
@@ -164,7 +154,6 @@ if st.button("💾 Save Shipment"):
         st.error("Add at least one item")
     else:
         try:
-            # Insert shipment header
             res = supabase.table("shipments").insert({
                 "invoice_number": invoice,
                 "bill_entry_number": bill_entry_number,
@@ -178,16 +167,12 @@ if st.button("💾 Save Shipment"):
 
             shipment_id = res.data[0]["id"]
 
-            # Prepare items
             for item in valid_items:
                 item["shipment_id"] = shipment_id
 
-            # Batch insert
             supabase.table("shipment_items").insert(valid_items).execute()
 
             st.success("✅ Shipment saved successfully")
-
-            # Reset after save
             st.session_state.items = []
 
         except Exception as e:
