@@ -14,7 +14,7 @@ supabase = create_client(
     os.getenv("SUPABASE_KEY")
 )
 
-# ---------------- SAFE SESSION (FIXED) ---------------- #
+# ---------------- SAFE SESSION ---------------- #
 if "items" not in st.session_state:
     st.session_state["items"] = []
 
@@ -75,6 +75,8 @@ if page == "Data Entry":
 
     tolerance = st.number_input("Shelf Life Tolerance (%)", 0, 100, 60)
 
+    verified_by = st.text_input("Expiry Verification Done By")
+
     st.divider()
 
     # -------- LINE ENTRY -------- #
@@ -99,7 +101,7 @@ if page == "Data Entry":
         if not barcode:
             st.error("Barcode required")
         elif exp <= mfg:
-            st.error("Expiry must be after manufacturing date")
+            st.error("Expiry must be after manufacturing")
         elif arrival_port < mfg:
             st.error("Arrival cannot be before manufacturing")
         else:
@@ -125,7 +127,6 @@ if page == "Data Entry":
     st.subheader("Items Added")
 
     items = st.session_state.get("items", [])
-
     if not isinstance(items, list):
         items = []
         st.session_state["items"] = []
@@ -153,7 +154,8 @@ if page == "Data Entry":
                     "bill_entry_date": str(bill_entry_date),
                     "shelf_life_tolerance": int(tolerance),
                     "total_lines": int(total_lines),
-                    "received_lines": int(received_lines)
+                    "received_lines": int(received_lines),
+                    "verified_by": verified_by
                 }).execute()
 
                 shipment_id = res.data[0]["id"]
@@ -227,6 +229,7 @@ elif page == "Report":
 
             df = pd.DataFrame(rows)
 
+            # -------- KPIs -------- #
             st.subheader("Summary")
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Total", len(df))
@@ -234,8 +237,50 @@ elif page == "Report":
             c3.metric("Near Expiry", (df["Status"] == "Near Expiry").sum())
             c4.metric("OK", (df["Status"] == "OK").sum())
 
+            # -------- TABLE -------- #
             st.subheader("Details")
             st.dataframe(df, use_container_width=True)
 
+            # -------- EMAIL -------- #
+            st.subheader("📧 Email Draft")
+
+            problem_df = df[df["Status"].isin(["Expired", "Near Expiry"])]
+
+            if problem_df.empty:
+                st.success("No short shelf life items")
+            else:
+                table_text = "\n".join(
+                    [
+                        f"{row['Description']} | {row['Shelf Life %']}% | {row['Status']}"
+                        for _, row in problem_df.iterrows()
+                    ]
+                )
+
+                verifier = shipments[0].get("verified_by", "N/A")
+                invoice_text = shipments[0].get("invoice_number", "")
+
+                email_text = f"""
+Subject: Shelf Life Concern – Invoice {invoice_text}
+
+On detailed verification of Invoice Number {invoice_text}, certain products are having short shelf life. Details are as follows:
+
+Item Description | Shelf Life % | Status
+--------------------------------------------------
+{table_text}
+
+Please do the needful.
+
+Expiry verification done by: {verifier}
+"""
+
+                st.text_area("Email Preview", email_text, height=300)
+
+                st.download_button(
+                    "⬇️ Download Email",
+                    email_text,
+                    "email.txt"
+                )
+
+            # -------- DOWNLOAD -------- #
             csv = df.to_csv(index=False).encode("utf-8")
             st.download_button("⬇️ Download CSV", csv, "report.csv")
