@@ -1,3 +1,4 @@
+
 import streamlit as st
 from datetime import date
 import os
@@ -36,7 +37,7 @@ def get_status(remaining, total, tolerance):
         return "Near Expiry"
     return "OK"
 
-# ---------------- RESET BUTTON ---------------- #
+# ---------------- RESET ---------------- #
 if st.button("🔄 Reset Session"):
     st.session_state.clear()
     st.rerun()
@@ -44,29 +45,48 @@ if st.button("🔄 Reset Session"):
 # ---------------- HEADER ---------------- #
 st.header("Shipment Details")
 
-col1, col2, col3 = st.columns(3)
+col1, col2 = st.columns(2)
 
 with col1:
     invoice = st.text_input("Invoice Number")
 
 with col2:
-    total_lines = st.number_input("Invoice Line Count", min_value=1, step=1)
+    bill_entry_number = st.text_input("Bill of Entry Number")
+
+col3, col4 = st.columns(2)
 
 with col3:
-    received_lines = st.number_input("Received Line Count", min_value=0, step=1)
-
-col4, col5, col6 = st.columns(3)
+    total_lines = st.number_input(
+        "Number of Item Lines in Invoice",
+        min_value=1,
+        step=1
+    )
 
 with col4:
-    arrival_port = st.date_input("Arrival at Port")
+    received_lines = st.number_input(
+        "Actual Number of Lines Received",
+        min_value=0,
+        step=1
+    )
+
+col5, col6, col7 = st.columns(3)
 
 with col5:
-    arrival_wh = st.date_input("Arrival at Warehouse")
+    arrival_port = st.date_input("Arrival at Port")
 
 with col6:
-    bill_entry = st.date_input("Bill of Entry Date")
+    arrival_wh = st.date_input("Arrival at Warehouse")
 
-tolerance = st.slider("Shelf Life Tolerance (%)", 0, 100, 20)
+with col7:
+    bill_entry_date = st.date_input("Bill of Entry Date")
+
+tolerance = st.number_input(
+    "Shelf Life Tolerance (%)",
+    min_value=0,
+    max_value=100,
+    value=60,
+    step=1
+)
 
 st.divider()
 
@@ -79,10 +99,10 @@ description = st.text_input("Item Description")
 col7, col8 = st.columns(2)
 
 with col7:
-    ordered_qty = st.number_input("Ordered Qty", min_value=0)
+    ordered_qty = st.number_input("Ordered Quantity", min_value=0)
 
 with col8:
-    received_qty = st.number_input("Received Qty", min_value=0)
+    received_qty = st.number_input("Received Quantity", min_value=0)
 
 col9, col10 = st.columns(2)
 
@@ -121,7 +141,7 @@ st.subheader("Items Added")
 
 items = st.session_state.get("items", [])
 
-# 🔒 HARD VALIDATION (fixes your error permanently)
+# Safety check (prevents your crash)
 if not isinstance(items, list):
     st.session_state.items = []
     items = []
@@ -141,26 +161,28 @@ if st.button("💾 Save Shipment"):
     if not invoice:
         st.error("Invoice number required")
     elif not valid_items:
-        st.error("Add at least one valid item")
+        st.error("Add at least one item")
     else:
         try:
-            # Insert shipment
+            # Insert shipment header
             res = supabase.table("shipments").insert({
                 "invoice_number": invoice,
+                "bill_entry_number": bill_entry_number,
                 "arrival_port_date": str(arrival_port),
                 "arrival_warehouse_date": str(arrival_wh),
-                "bill_entry_date": str(bill_entry),
-                "shelf_life_tolerance": tolerance,
+                "bill_entry_date": str(bill_entry_date),
+                "shelf_life_tolerance": int(tolerance),
                 "total_lines": int(total_lines),
                 "received_lines": int(received_lines)
             }).execute()
 
             shipment_id = res.data[0]["id"]
 
-            # Batch insert items (FAST + CLEAN)
+            # Prepare items
             for item in valid_items:
                 item["shipment_id"] = shipment_id
 
+            # Batch insert
             supabase.table("shipment_items").insert(valid_items).execute()
 
             st.success("✅ Shipment saved successfully")
