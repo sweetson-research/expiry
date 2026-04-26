@@ -1,117 +1,227 @@
-# ===================== SHELF LIFE REPORT ===================== #
-import pandas as pd
 import streamlit as st
+from datetime import date
+import os
+import pandas as pd
+from supabase import create_client
+from dotenv import load_dotenv
 
-st.divider()
-st.header("📊 Shelf Life Report")
+# ---------------- CONFIG ---------------- #
+st.set_page_config(page_title="Shelf Life System", layout="wide")
 
-# -------- Filters -------- #
-c1, c2, c3 = st.columns(3)
+load_dotenv()
+supabase = create_client(
+    os.getenv("SUPABASE_URL"),
+    os.getenv("SUPABASE_KEY")
+)
 
-with c1:
-    f_invoice = st.text_input("Invoice Number (optional)")
+# ---------------- NAVIGATION ---------------- #
+st.sidebar.title("📦 Menu")
+page = st.sidebar.radio("Go to", ["Data Entry", "Shelf Life Report"])
 
-with c2:
-    from_date = st.date_input("From Arrival Date")
+# ---------------- SESSION ---------------- #
+if "items" not in st.session_state or not isinstance(st.session_state.items, list):
+    st.session_state.items = []
 
-with c3:
-    to_date = st.date_input("To Arrival Date")
+# ---------------- COMMON FUNCTIONS ---------------- #
+def calculate_shelf_life(mfg, exp, arrival_port):
+    total_days = (exp - mfg).days
+    remaining_days = (exp - arrival_port).days
+    percent = (remaining_days / total_days) * 100 if total_days > 0 else 0
+    return total_days, remaining_days, percent
 
-show_all = st.checkbox("Show All (ignore filters)", value=True)
+def get_status(percent, tolerance):
+    if percent <= 0:
+        return "Expired"
+    elif percent < tolerance:
+        return "Near Expiry"
+    return "OK"
 
-# -------- Generate -------- #
-if st.button("📥 Generate Report"):
-    try:
-        # ---- Fetch shipments with filters ---- #
+# =====================================================
+# 📥 DATA ENTRY PAGE
+# =====================================================
+if page == "Data Entry":
+
+    st.title("📥 Shipment Entry")
+
+    if st.button("🔄 Reset Session"):
+        st.session_state.clear()
+        st.rerun()
+
+    # -------- HEADER -------- #
+    st.header("Shipment Details")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        invoice = st.text_input("Invoice Number")
+    with c2:
+        bill_entry_number = st.text_input("Bill of Entry Number")
+
+    c3, c4 = st.columns(2)
+    with c3:
+        total_lines = st.number_input("Number of Item Lines in Invoice", min_value=1)
+    with c4:
+        received_lines = st.number_input("Actual Number of Lines Received", min_value=0)
+
+    c5, c6, c7 = st.columns(3)
+    with c5:
+        arrival_port = st.date_input("Arrival at Port")
+    with c6:
+        arrival_wh = st.date_input("Arrival at Warehouse")
+    with c7:
+        bill_entry_date = st.date_input("Bill of Entry Date")
+
+    tolerance = st.number_input("Shelf Life Tolerance (%)", 0, 100, 60)
+
+    st.divider()
+
+    # -------- LINE ENTRY -------- #
+    st.header("Add Line Item")
+
+    barcode = st.text_input("Scan / Enter Barcode")
+    description = st.text_input("Item Description")
+
+    c8, c9 = st.columns(2)
+    with c8:
+        ordered_qty = st.number_input("Ordered Quantity", min_value=0)
+    with c9:
+        received_qty = st.number_input("Received Quantity", min_value=0)
+
+    c10, c11 = st.columns(2)
+    with c10:
+        mfg = st.date_input("Manufacturing Date")
+    with c11:
+        exp = st.date_input("Expiry Date")
+
+    if st.button("➕ Add Item"):
+        if not barcode:
+            st.error("Barcode required")
+        elif exp <= mfg:
+            st.error("Expiry must be after MFG")
+        else:
+            total, remaining, percent = calculate_shelf_life(mfg, exp, arrival_port)
+            status = get_status(percent, tolerance)
+
+            st.session_state.items.append({
+                "barcode": barcode,
+                "description": description,
+                "ordered_qty": int(ordered_qty),
+                "received_qty": int(received_qty),
+                "mfg_date": str(mfg),
+                "exp_date": str(exp),
+                "total_days": total,
+                "remaining_days": remaining,
+                "shelf_life_percent": round(percent, 2),
+                "status": status
+            })
+
+            st.success("Item added")
+
+    # -------- DISPLAY -------- #
+    st.subheader("Items Added")
+
+    valid_items = [i for i in st.session_state.items if isinstance(i, dict)]
+
+    if valid_items:
+        st.dataframe(pd.DataFrame(valid_items), use_container_width=True)
+    else:
+        st.info("No items added")
+
+    # -------- SAVE -------- #
+    if st.button("💾 Save Shipment"):
+        if not invoice:
+            st.error("Invoice required")
+        elif not valid_items:
+            st.error("Add items")
+        else:
+            res = supabase.table("shipments").insert({
+                "invoice_number": invoice,
+                "bill_entry_number": bill_entry_number,
+                "arrival_port_date": str(arrival_port),
+                "arrival_warehouse_date": str(arrival_wh),
+                "bill_entry_date": str(bill_entry_date),
+                "shelf_life_tolerance": int(tolerance),
+                "total_lines": int(total_lines),
+                "received_lines": int(received_lines)
+            }).execute()
+
+            shipment_id = res.data[0]["id"]
+
+            for i in valid_items:
+                i["shipment_id"] = shipment_id
+
+            supabase.table("shipment_items").insert(valid_items).execute()
+
+            st.success("✅ Saved")
+            st.session_state.items = []
+
+# =====================================================
+# 📊 REPORT PAGE
+# =====================================================
+elif page == "Shelf Life Report":
+
+    st.title("📊 Shelf Life Report")
+
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        f_invoice = st.text_input("Invoice Filter")
+
+    with c2:
+        from_date = st.date_input("From Date")
+
+    with c3:
+        to_date = st.date_input("To Date")
+
+    if st.button("📥 Generate Report"):
+
         q = supabase.table("shipments").select("*")
 
-        if not show_all:
-            if f_invoice:
-                q = q.eq("invoice_number", f_invoice)
-            if from_date:
-                q = q.gte("arrival_port_date", str(from_date))
-            if to_date:
-                q = q.lte("arrival_port_date", str(to_date))
+        if f_invoice:
+            q = q.eq("invoice_number", f_invoice)
+        if from_date:
+            q = q.gte("arrival_port_date", str(from_date))
+        if to_date:
+            q = q.lte("arrival_port_date", str(to_date))
 
-        shipments_res = q.execute()
-        shipments = shipments_res.data or []
+        shipments = q.execute().data
 
         if not shipments:
-            st.warning("No shipments found for given filters")
+            st.warning("No data found")
         else:
-            shipment_ids = [s["id"] for s in shipments]
+            ids = [s["id"] for s in shipments]
 
-            # ---- Fetch all items in ONE call (fast) ---- #
-            items_res = supabase.table("shipment_items") \
+            items = supabase.table("shipment_items") \
                 .select("*") \
-                .in_("shipment_id", shipment_ids) \
-                .execute()
+                .in_("shipment_id", ids) \
+                .execute().data
 
-            items = items_res.data or []
+            ship_map = {s["id"]: s for s in shipments}
 
-            if not items:
-                st.warning("No items found")
-            else:
-                # ---- Map shipment info ---- #
-                ship_map = {s["id"]: s for s in shipments}
+            rows = []
+            for it in items:
+                sh = ship_map[it["shipment_id"]]
+                rows.append({
+                    "Invoice": sh["invoice_number"],
+                    "Bill Entry": sh.get("bill_entry_number"),
+                    "Arrival Date": sh.get("arrival_port_date"),
+                    "Barcode": it["barcode"],
+                    "Description": it["description"],
+                    "Shelf Life %": it["shelf_life_percent"],
+                    "Status": it["status"]
+                })
 
-                rows = []
-                for it in items:
-                    sh = ship_map.get(it["shipment_id"], {})
-                    rows.append({
-                        "Invoice": sh.get("invoice_number"),
-                        "Bill Entry No": sh.get("bill_entry_number"),
-                        "Arrival Port Date": sh.get("arrival_port_date"),
-                        "Barcode": it.get("barcode"),
-                        "Description": it.get("description"),
-                        "Ordered Qty": it.get("ordered_qty"),
-                        "Received Qty": it.get("received_qty"),
-                        "MFG Date": it.get("mfg_date"),
-                        "EXP Date": it.get("exp_date"),
-                        "Shelf Life %": it.get("shelf_life_percent"),
-                        "Status": it.get("status")
-                    })
+            df = pd.DataFrame(rows)
 
-                df = pd.DataFrame(rows)
+            # KPIs
+            st.subheader("Summary")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Total", len(df))
+            c2.metric("Expired", (df["Status"] == "Expired").sum())
+            c3.metric("Near Expiry", (df["Status"] == "Near Expiry").sum())
+            c4.metric("OK", (df["Status"] == "OK").sum())
 
-                # ---- KPIs ---- #
-                total = len(df)
-                expired = (df["Status"] == "Expired").sum()
-                near = (df["Status"] == "Near Expiry").sum()
-                ok = (df["Status"] == "OK").sum()
-                avg_pct = round(df["Shelf Life %"].mean(), 2) if total else 0
+            st.subheader("Details")
+            st.dataframe(df, use_container_width=True)
 
-                k1, k2, k3, k4, k5 = st.columns(5)
-                k1.metric("Total Items", total)
-                k2.metric("Expired", expired)
-                k3.metric("Near Expiry", near)
-                k4.metric("OK", ok)
-                k5.metric("Avg Shelf Life %", avg_pct)
-
-                # ---- Styling (simple + readable) ---- #
-                def highlight_status(val):
-                    if val == "Expired":
-                        return "background-color:#ffcccc"
-                    elif val == "Near Expiry":
-                        return "background-color:#fff3cd"
-                    elif val == "OK":
-                        return "background-color:#d4edda"
-                    return ""
-
-                styled_df = df.style.applymap(highlight_status, subset=["Status"])
-
-                # ---- Table ---- #
-                st.subheader("Detailed Report")
-                st.dataframe(styled_df, use_container_width=True)
-
-                # ---- Download ---- #
-                csv = df.to_csv(index=False).encode("utf-8")
-                st.download_button(
-                    "⬇️ Download CSV",
-                    csv,
-                    "shelf_life_report.csv",
-                    "text/csv"
-                )
-
-    except Exception as e:
-        st.error(f"Report Error: {e}")
+            csv = df.to_csv(index=False).encode("utf-8")
+            st.download_button("⬇️ Download CSV", csv, "report.csv")
