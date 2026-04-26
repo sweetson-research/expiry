@@ -1,179 +1,117 @@
-import streamlit as st
-from datetime import date
-import os
+# ===================== SHELF LIFE REPORT ===================== #
 import pandas as pd
-from supabase import create_client
-from dotenv import load_dotenv
-
-# ---------------- CONFIG ---------------- #
-st.set_page_config(page_title="Shelf Life Tracker", layout="wide")
-st.title("📦 Shipment Shelf-Life Tracker")
-
-load_dotenv()
-
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# ---------------- SAFE SESSION ---------------- #
-if "items" not in st.session_state or not isinstance(st.session_state.items, list):
-    st.session_state.items = []
-
-# ---------------- HELPERS ---------------- #
-def calculate_shelf_life(mfg, exp, arrival_port):
-    total_days = (exp - mfg).days
-    remaining_days = (exp - arrival_port).days
-    percent = (remaining_days / total_days) * 100 if total_days > 0 else 0
-    return total_days, remaining_days, percent
-
-def get_status(percent, tolerance):
-    if percent <= 0:
-        return "Expired"
-    elif percent < tolerance:
-        return "Near Expiry"
-    return "OK"
-
-# ---------------- RESET ---------------- #
-if st.button("🔄 Reset Session"):
-    st.session_state.clear()
-    st.rerun()
-
-# ---------------- HEADER ---------------- #
-st.header("Shipment Details")
-
-col1, col2 = st.columns(2)
-
-with col1:
-    invoice = st.text_input("Invoice Number")
-
-with col2:
-    bill_entry_number = st.text_input("Bill of Entry Number")
-
-col3, col4 = st.columns(2)
-
-with col3:
-    total_lines = st.number_input("Number of Item Lines in Invoice", min_value=1)
-
-with col4:
-    received_lines = st.number_input("Actual Number of Lines Received", min_value=0)
-
-col5, col6, col7 = st.columns(3)
-
-with col5:
-    arrival_port = st.date_input("Arrival at Port")
-
-with col6:
-    arrival_wh = st.date_input("Arrival at Warehouse")
-
-with col7:
-    bill_entry_date = st.date_input("Bill of Entry Date")
-
-tolerance = st.number_input(
-    "Shelf Life Tolerance (%)",
-    min_value=0,
-    max_value=100,
-    value=60
-)
+import streamlit as st
 
 st.divider()
+st.header("📊 Shelf Life Report")
 
-# ---------------- LINE ENTRY ---------------- #
-st.header("Add Line Item")
+# -------- Filters -------- #
+c1, c2, c3 = st.columns(3)
 
-barcode = st.text_input("Scan / Enter Barcode")
-description = st.text_input("Item Description")
+with c1:
+    f_invoice = st.text_input("Invoice Number (optional)")
 
-col7, col8 = st.columns(2)
+with c2:
+    from_date = st.date_input("From Arrival Date")
 
-with col7:
-    ordered_qty = st.number_input("Ordered Quantity", min_value=0)
+with c3:
+    to_date = st.date_input("To Arrival Date")
 
-with col8:
-    received_qty = st.number_input("Received Quantity", min_value=0)
+show_all = st.checkbox("Show All (ignore filters)", value=True)
 
-col9, col10 = st.columns(2)
+# -------- Generate -------- #
+if st.button("📥 Generate Report"):
+    try:
+        # ---- Fetch shipments with filters ---- #
+        q = supabase.table("shipments").select("*")
 
-with col9:
-    mfg = st.date_input("Manufacturing Date")
+        if not show_all:
+            if f_invoice:
+                q = q.eq("invoice_number", f_invoice)
+            if from_date:
+                q = q.gte("arrival_port_date", str(from_date))
+            if to_date:
+                q = q.lte("arrival_port_date", str(to_date))
 
-with col10:
-    exp = st.date_input("Expiry Date")
+        shipments_res = q.execute()
+        shipments = shipments_res.data or []
 
-# ---------------- ADD ITEM ---------------- #
-if st.button("➕ Add Item"):
-    if not barcode:
-        st.error("Barcode required")
-    elif exp <= mfg:
-        st.error("Expiry must be after manufacturing date")
-    elif arrival_port < mfg:
-        st.error("Arrival date cannot be before manufacturing date")
-    else:
-        total, remaining, percent = calculate_shelf_life(mfg, exp, arrival_port)
-        status = get_status(percent, tolerance)
+        if not shipments:
+            st.warning("No shipments found for given filters")
+        else:
+            shipment_ids = [s["id"] for s in shipments]
 
-        st.session_state.items.append({
-            "barcode": barcode,
-            "description": description,
-            "ordered_qty": int(ordered_qty),
-            "received_qty": int(received_qty),
-            "mfg_date": str(mfg),
-            "exp_date": str(exp),
-            "total_days": total,
-            "remaining_days": remaining,
-            "shelf_life_percent": round(percent, 2),
-            "status": status
-        })
+            # ---- Fetch all items in ONE call (fast) ---- #
+            items_res = supabase.table("shipment_items") \
+                .select("*") \
+                .in_("shipment_id", shipment_ids) \
+                .execute()
 
-        st.success("Item added")
+            items = items_res.data or []
 
-# ---------------- DISPLAY ---------------- #
-st.subheader("Items Added")
+            if not items:
+                st.warning("No items found")
+            else:
+                # ---- Map shipment info ---- #
+                ship_map = {s["id"]: s for s in shipments}
 
-items = st.session_state.get("items", [])
+                rows = []
+                for it in items:
+                    sh = ship_map.get(it["shipment_id"], {})
+                    rows.append({
+                        "Invoice": sh.get("invoice_number"),
+                        "Bill Entry No": sh.get("bill_entry_number"),
+                        "Arrival Port Date": sh.get("arrival_port_date"),
+                        "Barcode": it.get("barcode"),
+                        "Description": it.get("description"),
+                        "Ordered Qty": it.get("ordered_qty"),
+                        "Received Qty": it.get("received_qty"),
+                        "MFG Date": it.get("mfg_date"),
+                        "EXP Date": it.get("exp_date"),
+                        "Shelf Life %": it.get("shelf_life_percent"),
+                        "Status": it.get("status")
+                    })
 
-if not isinstance(items, list):
-    st.session_state.items = []
-    items = []
+                df = pd.DataFrame(rows)
 
-valid_items = [i for i in items if isinstance(i, dict)]
+                # ---- KPIs ---- #
+                total = len(df)
+                expired = (df["Status"] == "Expired").sum()
+                near = (df["Status"] == "Near Expiry").sum()
+                ok = (df["Status"] == "OK").sum()
+                avg_pct = round(df["Shelf Life %"].mean(), 2) if total else 0
 
-if valid_items:
-    df = pd.DataFrame(valid_items)
-    st.dataframe(df, use_container_width=True)
-else:
-    st.info("No items added yet")
+                k1, k2, k3, k4, k5 = st.columns(5)
+                k1.metric("Total Items", total)
+                k2.metric("Expired", expired)
+                k3.metric("Near Expiry", near)
+                k4.metric("OK", ok)
+                k5.metric("Avg Shelf Life %", avg_pct)
 
-# ---------------- SAVE ---------------- #
-st.divider()
+                # ---- Styling (simple + readable) ---- #
+                def highlight_status(val):
+                    if val == "Expired":
+                        return "background-color:#ffcccc"
+                    elif val == "Near Expiry":
+                        return "background-color:#fff3cd"
+                    elif val == "OK":
+                        return "background-color:#d4edda"
+                    return ""
 
-if st.button("💾 Save Shipment"):
-    if not invoice:
-        st.error("Invoice number required")
-    elif not valid_items:
-        st.error("Add at least one item")
-    else:
-        try:
-            res = supabase.table("shipments").insert({
-                "invoice_number": invoice,
-                "bill_entry_number": bill_entry_number,
-                "arrival_port_date": str(arrival_port),
-                "arrival_warehouse_date": str(arrival_wh),
-                "bill_entry_date": str(bill_entry_date),
-                "shelf_life_tolerance": int(tolerance),
-                "total_lines": int(total_lines),
-                "received_lines": int(received_lines)
-            }).execute()
+                styled_df = df.style.applymap(highlight_status, subset=["Status"])
 
-            shipment_id = res.data[0]["id"]
+                # ---- Table ---- #
+                st.subheader("Detailed Report")
+                st.dataframe(styled_df, use_container_width=True)
 
-            for item in valid_items:
-                item["shipment_id"] = shipment_id
+                # ---- Download ---- #
+                csv = df.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    "⬇️ Download CSV",
+                    csv,
+                    "shelf_life_report.csv",
+                    "text/csv"
+                )
 
-            supabase.table("shipment_items").insert(valid_items).execute()
-
-            st.success("✅ Shipment saved successfully")
-            st.session_state.items = []
-
-        except Exception as e:
-            st.error(f"Error: {e}")
+    except Exception as e:
+        st.error(f"Report Error: {e}")
