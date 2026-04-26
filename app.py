@@ -1,9 +1,9 @@
 import streamlit as st
 from datetime import date
 import os
+import pandas as pd
 from supabase import create_client
 from dotenv import load_dotenv
-import pandas as pd
 
 # ---------------- CONFIG ---------------- #
 st.set_page_config(page_title="Shelf Life Tracker", layout="wide")
@@ -15,6 +15,10 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# ---------------- SAFE SESSION INIT ---------------- #
+if "items" not in st.session_state or not isinstance(st.session_state.items, list):
+    st.session_state.items = []
 
 # ---------------- HELPERS ---------------- #
 def calculate_shelf_life(mfg, exp):
@@ -32,9 +36,10 @@ def get_status(remaining, total, tolerance):
         return "Near Expiry"
     return "OK"
 
-# ---------------- SESSION STATE ---------------- #
-if "items" not in st.session_state:
-    st.session_state.items = []
+# ---------------- RESET BUTTON ---------------- #
+if st.button("🔄 Reset Session"):
+    st.session_state.clear()
+    st.rerun()
 
 # ---------------- HEADER ---------------- #
 st.header("Shipment Details")
@@ -68,34 +73,31 @@ st.divider()
 # ---------------- LINE ENTRY ---------------- #
 st.header("Add Line Item")
 
+barcode = st.text_input("Scan / Enter Barcode")
+description = st.text_input("Item Description")
+
 col7, col8 = st.columns(2)
 
 with col7:
-    barcode = st.text_input("Scan / Enter Barcode")
+    ordered_qty = st.number_input("Ordered Qty", min_value=0)
 
 with col8:
-    description = st.text_input("Item Description")
+    received_qty = st.number_input("Received Qty", min_value=0)
 
 col9, col10 = st.columns(2)
 
 with col9:
-    ordered_qty = st.number_input("Ordered Qty", min_value=0)
-
-with col10:
-    received_qty = st.number_input("Received Qty", min_value=0)
-
-col11, col12 = st.columns(2)
-
-with col11:
     mfg = st.date_input("Manufacturing Date")
 
-with col12:
+with col10:
     exp = st.date_input("Expiry Date")
 
 # ---------------- ADD ITEM ---------------- #
 if st.button("➕ Add Item"):
-    if exp <= mfg:
-        st.error("Expiry date must be after manufacturing date")
+    if not barcode:
+        st.error("Barcode required")
+    elif exp <= mfg:
+        st.error("Expiry must be after manufacturing date")
     else:
         total, remaining = calculate_shelf_life(mfg, exp)
         status = get_status(remaining, total, tolerance)
@@ -103,21 +105,31 @@ if st.button("➕ Add Item"):
         st.session_state.items.append({
             "barcode": barcode,
             "description": description,
-            "ordered_qty": ordered_qty,
-            "received_qty": received_qty,
+            "ordered_qty": int(ordered_qty),
+            "received_qty": int(received_qty),
             "mfg_date": str(mfg),
             "exp_date": str(exp),
             "total_days": total,
             "remaining_days": remaining,
             "status": status
         })
+
         st.success("Item added")
 
-# ---------------- DISPLAY ITEMS ---------------- #
+# ---------------- DISPLAY ---------------- #
 st.subheader("Items Added")
 
-if st.session_state.items:
-    df = pd.DataFrame(st.session_state.items)
+items = st.session_state.get("items", [])
+
+# 🔒 HARD VALIDATION (fixes your error permanently)
+if not isinstance(items, list):
+    st.session_state.items = []
+    items = []
+
+valid_items = [i for i in items if isinstance(i, dict)]
+
+if valid_items:
+    df = pd.DataFrame(valid_items)
     st.dataframe(df, use_container_width=True)
 else:
     st.info("No items added yet")
@@ -128,31 +140,32 @@ st.divider()
 if st.button("💾 Save Shipment"):
     if not invoice:
         st.error("Invoice number required")
-    elif not st.session_state.items:
-        st.error("Add at least one item")
+    elif not valid_items:
+        st.error("Add at least one valid item")
     else:
         try:
-            # Insert shipment header
+            # Insert shipment
             res = supabase.table("shipments").insert({
                 "invoice_number": invoice,
                 "arrival_port_date": str(arrival_port),
                 "arrival_warehouse_date": str(arrival_wh),
                 "bill_entry_date": str(bill_entry),
                 "shelf_life_tolerance": tolerance,
-                "total_lines": total_lines,
-                "received_lines": received_lines
+                "total_lines": int(total_lines),
+                "received_lines": int(received_lines)
             }).execute()
 
             shipment_id = res.data[0]["id"]
 
-            # Insert items
-            for item in st.session_state.items:
+            # Batch insert items (FAST + CLEAN)
+            for item in valid_items:
                 item["shipment_id"] = shipment_id
-                supabase.table("shipment_items").insert(item).execute()
+
+            supabase.table("shipment_items").insert(valid_items).execute()
 
             st.success("✅ Shipment saved successfully")
 
-            # Reset
+            # Reset after save
             st.session_state.items = []
 
         except Exception as e:
