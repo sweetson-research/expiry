@@ -5,9 +5,23 @@ import pandas as pd
 from supabase import create_client
 from dotenv import load_dotenv
 
-# ---------------- CONFIG ---------------- #
+# ---------------- PAGE CONFIG ---------------- #
 st.set_page_config(page_title="Shelf Life System", layout="wide")
 
+# ---------------- HIDE STREAMLIT UI ---------------- #
+hide_st_style = """
+<style>
+#MainMenu {visibility: hidden;}
+header {visibility: hidden;}
+footer {visibility: hidden;}
+[data-testid="stToolbar"] {display: none;}
+[data-testid="stDecoration"] {display: none;}
+[data-testid="stStatusWidget"] {display: none;}
+</style>
+"""
+st.markdown(hide_st_style, unsafe_allow_html=True)
+
+# ---------------- LOAD ENV ---------------- #
 load_dotenv()
 supabase = create_client(
     os.getenv("SUPABASE_URL"),
@@ -17,7 +31,6 @@ supabase = create_client(
 # ---------------- SAFE SESSION ---------------- #
 if "items" not in st.session_state:
     st.session_state["items"] = []
-
 if not isinstance(st.session_state.get("items"), list):
     st.session_state["items"] = []
 
@@ -35,7 +48,7 @@ def get_status(percent, tolerance):
         return "Near Expiry"
     return "OK"
 
-# ---------------- NAV ---------------- #
+# ---------------- NAVIGATION ---------------- #
 st.sidebar.title("📦 Menu")
 page = st.sidebar.radio("Select", ["Data Entry", "Report"])
 
@@ -50,7 +63,6 @@ if page == "Data Entry":
         st.session_state.clear()
         st.rerun()
 
-    # -------- HEADER -------- #
     st.header("Shipment Details")
 
     c1, c2 = st.columns(2)
@@ -250,17 +262,14 @@ elif page == "Report":
                 st.success("No short shelf life items")
             else:
                 table_text = "\n".join(
-                    [
-                        f"{row['Description']} | {row['Shelf Life %']}% | {row['Status']}"
-                        for _, row in problem_df.iterrows()
-                    ]
+                    f"{row['Description']} | {row['Shelf Life %']}% | {row['Status']}"
+                    for _, row in problem_df.iterrows()
                 )
 
                 verifier = shipments[0].get("verified_by", "N/A")
                 invoice_text = shipments[0].get("invoice_number", "")
 
-                email_text = f"""
-Subject: Shelf Life Concern – Invoice {invoice_text}
+                email_text = f"""Subject: Shelf Life Concern – Invoice {invoice_text}
 
 On detailed verification of Invoice Number {invoice_text}, certain products are having short shelf life. Details are as follows:
 
@@ -275,12 +284,19 @@ Expiry verification done by: {verifier}
 
                 st.text_area("Email Preview", email_text, height=300)
 
-                st.download_button(
-                    "⬇️ Download Email",
-                    email_text,
-                    "email.txt"
-                )
+                st.download_button("⬇️ Download Email", email_text, "email.txt")
 
-            # -------- DOWNLOAD -------- #
+            # -------- DOWNLOAD CSV -------- #
             csv = df.to_csv(index=False).encode("utf-8")
             st.download_button("⬇️ Download CSV", csv, "report.csv")
+
+# ---------------- FOOTER ---------------- #
+st.markdown(
+    """
+    <hr style="margin-top:50px;">
+    <div style="text-align:center; font-size:13px; color:#888;">
+        © 2026 | Developed by <b>Sweetson Joseph</b>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
