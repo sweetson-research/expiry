@@ -8,18 +8,30 @@ from dotenv import load_dotenv
 # ---------------- PAGE CONFIG ---------------- #
 st.set_page_config(page_title="Shelf Life System", layout="wide")
 
-# ---------------- HIDE STREAMLIT UI ---------------- #
-hide_st_style = """
+# ---------------- FULL UI CLEAN CSS ---------------- #
+st.markdown("""
 <style>
+
+/* Hide default Streamlit UI */
 #MainMenu {visibility: hidden;}
 header {visibility: hidden;}
 footer {visibility: hidden;}
-[data-testid="stToolbar"] {display: none;}
-[data-testid="stDecoration"] {display: none;}
-[data-testid="stStatusWidget"] {display: none;}
+
+/* Hide top toolbar */
+[data-testid="stToolbar"] {display: none !important;}
+[data-testid="stDecoration"] {display: none !important;}
+[data-testid="stStatusWidget"] {display: none !important;}
+[data-testid="stHeader"] {display: none !important;}
+
+/* Hide floating buttons (Share / Deploy / Manage App) */
+button[kind="secondary"] {display: none !important;}
+div[data-testid="stFloatingActionButton"] {display: none !important;}
+
+/* Hide hamburger */
+[data-testid="collapsedControl"] {display: none !important;}
+
 </style>
-"""
-st.markdown(hide_st_style, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
 # ---------------- LOAD ENV ---------------- #
 load_dotenv()
@@ -31,6 +43,7 @@ supabase = create_client(
 # ---------------- SAFE SESSION ---------------- #
 if "items" not in st.session_state:
     st.session_state["items"] = []
+
 if not isinstance(st.session_state.get("items"), list):
     st.session_state["items"] = []
 
@@ -48,7 +61,7 @@ def get_status(percent, tolerance):
         return "Near Expiry"
     return "OK"
 
-# ---------------- NAVIGATION ---------------- #
+# ---------------- NAV ---------------- #
 st.sidebar.title("📦 Menu")
 page = st.sidebar.radio("Select", ["Data Entry", "Report"])
 
@@ -91,7 +104,6 @@ if page == "Data Entry":
 
     st.divider()
 
-    # -------- LINE ENTRY -------- #
     st.header("Add Line Item")
 
     barcode = st.text_input("Scan / Enter Barcode")
@@ -135,7 +147,6 @@ if page == "Data Entry":
 
             st.success("Item added")
 
-    # -------- DISPLAY -------- #
     st.subheader("Items Added")
 
     items = st.session_state.get("items", [])
@@ -150,7 +161,6 @@ if page == "Data Entry":
     else:
         st.info("No items added")
 
-    # -------- SAVE -------- #
     if st.button("💾 Save Shipment"):
         if not invoice:
             st.error("Invoice required")
@@ -194,10 +204,8 @@ elif page == "Report":
 
     with c1:
         f_invoice = st.text_input("Invoice Filter")
-
     with c2:
         from_date = st.date_input("From Date")
-
     with c3:
         to_date = st.date_input("To Date")
 
@@ -241,7 +249,6 @@ elif page == "Report":
 
             df = pd.DataFrame(rows)
 
-            # -------- KPIs -------- #
             st.subheader("Summary")
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Total", len(df))
@@ -249,18 +256,14 @@ elif page == "Report":
             c3.metric("Near Expiry", (df["Status"] == "Near Expiry").sum())
             c4.metric("OK", (df["Status"] == "OK").sum())
 
-            # -------- TABLE -------- #
             st.subheader("Details")
             st.dataframe(df, use_container_width=True)
 
-            # -------- EMAIL -------- #
             st.subheader("📧 Email Draft")
 
             problem_df = df[df["Status"].isin(["Expired", "Near Expiry"])]
 
-            if problem_df.empty:
-                st.success("No short shelf life items")
-            else:
+            if not problem_df.empty:
                 table_text = "\n".join(
                     f"{row['Description']} | {row['Shelf Life %']}% | {row['Status']}"
                     for _, row in problem_df.iterrows()
@@ -283,20 +286,15 @@ Expiry verification done by: {verifier}
 """
 
                 st.text_area("Email Preview", email_text, height=300)
-
                 st.download_button("⬇️ Download Email", email_text, "email.txt")
 
-            # -------- DOWNLOAD CSV -------- #
             csv = df.to_csv(index=False).encode("utf-8")
             st.download_button("⬇️ Download CSV", csv, "report.csv")
 
 # ---------------- FOOTER ---------------- #
-st.markdown(
-    """
-    <hr style="margin-top:50px;">
-    <div style="text-align:center; font-size:13px; color:#888;">
-        © 2026 | Developed by <b>Sweetson Joseph</b>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+st.markdown("""
+<hr style="margin-top:50px;">
+<div style="text-align:center; font-size:13px; color:#888;">
+    © 2026 | Developed by <b>Sweetson Joseph</b>
+</div>
+""", unsafe_allow_html=True)
